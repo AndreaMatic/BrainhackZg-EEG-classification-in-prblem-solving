@@ -8,9 +8,11 @@ from keras.layers import LSTM, Flatten, BatchNormalization, Dense, Dropout
 from keras.constraints import max_norm
 from keras import regularizers
 
+import keras.backend as K
+
 import os
-from sklearn.model_selection import StratifiedShuffleSplit
-from sklearn.metrics import accuracy_score
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import accuracy_score, confusion_matrix
 
 from scipy.io import loadmat
 
@@ -67,14 +69,13 @@ def sequential_model(n_channels, n_timepoints):
     model.add(Flatten())
     model.add(Dense(1, activation='sigmoid'))
 
-    model.compile(loss='binary_crossentropy',
-                  optimizer='rmsprop',
-                  metrics=['accuracy'])
+    model.compile(loss='binary_crossentropy', optimizer='rmsprop', metrics=['accuracy'])
 
     return model
 
 if __name__ == "__main__":
     n_epochs = 10
+    n_folds = 5
 
     data, labels = load_data(data_dir)
     data = preprocess_timeseries(data)
@@ -85,15 +86,15 @@ if __name__ == "__main__":
     n_channels = data.shape[1]
     n_timepoints = data.shape[2]
 
-    sss = StratifiedShuffleSplit(n_splits=1, random_state=42)
-    for train_indices, test_indices in sss.split(data, labels):
-        print(len(train_indices))
-        print(len(test_indices))
+    all_test_truth, all_test_probabilities, all_validation_truth, all_validation_predictions = [], [], [], []
+
+    sss = StratifiedKFold(n_splits=n_folds, random_state=42)
+    for train_indices, other_indices in sss.split(data, labels):
+        validation_indices = other_indices[::2]
+        test_indices = other_indices[1::2]
 
         model = sequential_model(n_channels, n_timepoints)
         model.summary()
-
-        print(model.metrics_names)
 
         results = np.zeros((n_epochs, len(train_indices), 1))
 
@@ -114,6 +115,22 @@ if __name__ == "__main__":
             print('Epoch', str(epoch_idx + 1), np.mean(results[epoch_idx, :, 0])*100, '% accuracy')
 
         test_predictions, test_truth = [], []
+        validation_predictions, validation_truth = [], []
+        for index in validation_indices:
+            x = data[index, ...][np.newaxis, ...]
+            y = labels[index, ...][np.newaxis, ...]
+
+            prediction = model.predict_on_batch(x)
+
+            if prediction > 0.5:
+                validation_predictions.append(1)
+            else:
+                validation_predictions.append(0)
+
+            validation_truth.append(y)
+            all_validation_truth.append(y)
+            all_validation_predictions.append(prediction)
+
         for index in test_indices:
             x = data[index, ...][np.newaxis, ...]
             y = labels[index, ...][np.newaxis, ...]
@@ -128,6 +145,14 @@ if __name__ == "__main__":
                 test_predictions.append(0)
 
             test_truth.append(y)
+            all_test_truth.append(y)
+            all_test_probabilities.append(prediction)
 
         test_score = accuracy_score(test_truth, test_predictions)
+        validation_score = accuracy_score(validation_truth, validation_predictions)
+        print('validation accuracy:', validation_score*100, '%')
         print('test accuracy:', test_score*100, '%')
+
+        #TODO: early stopping, plotting results, iterating through dropping channels for interpretability
+
+        K.clear_session()
